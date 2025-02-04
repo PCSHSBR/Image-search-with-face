@@ -4,3 +4,6 @@ insightface
 numpy
 torch
 onnxruntime
+streamlit
+pillow
+python-dotenv

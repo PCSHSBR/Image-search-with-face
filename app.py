@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Get admin credentials from environment variables
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_USERNAME = st.secrets["ADMIN_USERNAME"]
+ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
 
 # Initialize face analyzer with caching
 @st.cache_resource
