@@ -1,0 +1,6 @@
+flask
+opencv-python-headless
+insightface
+numpy
+torch
+onnxruntime
