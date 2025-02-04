@@ -8,6 +8,14 @@ from pathlib import Path
 import torch
 import random
 import shutil
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get admin credentials from environment variables
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # Initialize face analyzer with caching
 @st.cache_resource
@@ -35,60 +43,37 @@ def init_face_analyzer():
 
 # Cache database loading
 @st.cache_data
-def load_database_images(database_dir, _face_analyzer, max_samples=200):
-    """โหลดรูปและ random sampling ให้เหลือไม่เกิน max_samples"""
+def load_database_images(database_dir, _face_analyzer):
     database = []
-    
-    # ใช้ progress bar
-    progress_text = st.sidebar.empty()
-    progress_bar = st.sidebar.progress(0)
     
     # รวบรวมรูปทั้งหมด
     all_images = []
     for ext in ['*.jpg', '*.jpeg', '*.png']:
         all_images.extend(list(Path(database_dir).glob(ext)))
     
-    # สุ่มเลือกรูป
-    if len(all_images) > max_samples:
-        st.sidebar.warning(f"Sampling {max_samples} images from {len(all_images)} total images")
-        selected_images = random.sample(all_images, max_samples)
+    # สุ่มเลือกรูป 70% ของรูปทั้งหมด
+    sample_size = int(len(all_images) * 0.7)
+    if sample_size > 0:
+        selected_images = random.sample(all_images, sample_size)
     else:
         selected_images = all_images
     
-    # ใช้ batch processing
-    batch_size = 10
-    total_batches = len(selected_images) // batch_size + 1
-    
-    for batch_idx in range(total_batches):
-        start_idx = batch_idx * batch_size
-        end_idx = min((batch_idx + 1) * batch_size, len(selected_images))
-        batch_images = selected_images[start_idx:end_idx]
-        
-        # อัพเดท progress
-        progress = (batch_idx + 1) / total_batches
-        progress_text.text(f"Loading images: {int(progress * 100)}%")
-        progress_bar.progress(progress)
-        
-        # Process batch
-        for img_path in batch_images:
-            try:
-                img = cv2.imread(str(img_path))
-                if img is not None:
-                    # Resize ให้เล็กลงเพื่อเร็วขึ้น
-                    img = preprocess_image(img, max_size=320)  # ลดขนาดลง
-                    faces = _face_analyzer.get(img)
-                    if faces:
-                        database.append({
-                            "path": str(img_path),
-                            "embeddings": [face.normed_embedding for face in faces]
-                        })
-            except Exception as e:
-                st.sidebar.error(f"Error loading {img_path}: {str(e)}")
-                continue
-    
-    # Clear progress
-    progress_text.empty()
-    progress_bar.empty()
+    # Process images
+    for img_path in selected_images:
+        try:
+            img = cv2.imread(str(img_path))
+            if img is not None:
+                # Resize ให้เล็กลงเพื่อเร็วขึ้น
+                img = preprocess_image(img, max_size=320)  # ลดขนาดลง
+                faces = _face_analyzer.get(img)
+                if faces:
+                    database.append({
+                        "path": str(img_path),
+                        "embeddings": [face.normed_embedding for face in faces]
+                    })
+        except Exception as e:
+            st.sidebar.error(f"Error loading {img_path}: {str(e)}")
+            continue
     
     return database
 
@@ -169,7 +154,7 @@ def create_new_album(album_name):
     else:
         st.warning(f"Album '{album_name}' already exists")
 
-def upload_to_album(album_name, uploaded_files):
+def upload_to_album(album_name, uploaded_files, face_analyzer):
     album_dir = os.path.join("albums", album_name)
     if not os.path.exists(album_dir):
         st.error(f"Album '{album_name}' does not exist")
@@ -183,8 +168,9 @@ def upload_to_album(album_name, uploaded_files):
         uploaded_count += 1
     
     st.success(f"Uploaded {uploaded_count} files to {album_name}")
+    return reload_database(album_name, face_analyzer)
 
-def upload_folder_to_album(album_name, folder_path):
+def upload_folder_to_album(album_name, folder_path, face_analyzer):
     album_dir = os.path.join("albums", album_name)
     if not os.path.exists(album_dir):
         st.error(f"Album '{album_name}' does not exist")
@@ -207,6 +193,7 @@ def upload_folder_to_album(album_name, folder_path):
         st.success(f"Uploaded {len(uploaded_files)} files to {album_name}")
     else:
         st.warning("No valid image files found in the folder")
+    return reload_database(album_name, face_analyzer)
 
 def view_album_images(album_name):
     album_dir = os.path.join("albums", album_name)
@@ -233,11 +220,12 @@ def view_album_images(album_name):
                     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     st.image(img, caption=img_name)
 
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "123"  # ควรเก็บ password ใน environment variable หรือใช้ระบบ authentication ที่ปลอดภัย
-
 def check_admin(username, password):
     return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+
+def reload_database(album_name, face_analyzer):
+    database_dir = os.path.join("albums", album_name)
+    return load_database_images(database_dir, face_analyzer)
 
 def main():
     st.set_page_config(
@@ -247,6 +235,11 @@ def main():
     )
     
     st.title("Face Recognition App 👤")
+    
+    # Initialize components
+    status = st.empty()
+    progress = st.progress(0)
+    face_analyzer = init_face_analyzer()
     
     # Login section
     st.sidebar.header("Admin Login")
@@ -269,8 +262,7 @@ def main():
         # Upload to album section
         st.sidebar.header("Upload to Album")
         album_names = [name for name in os.listdir("albums") if os.path.isdir(os.path.join("albums", name))]
-        selected_album = st.sidebar.selectbox("Select album", album_names)
-        
+        selected_album = st.sidebar.selectbox("Select album", album_names, key="select_album_upload")
         # Multiple file upload
         uploaded_files = st.sidebar.file_uploader(
             "Choose images", 
@@ -278,24 +270,19 @@ def main():
             accept_multiple_files=True
         )
         if uploaded_files and selected_album:
-            upload_to_album(selected_album, uploaded_files)
+            database = upload_to_album(selected_album, uploaded_files, face_analyzer)
         
         # Folder upload
         folder_path = st.sidebar.text_input("Enter folder path to upload")
         if st.sidebar.button("Upload Folder") and selected_album and folder_path:
-            upload_folder_to_album(selected_album, folder_path)
+            database = upload_folder_to_album(selected_album, folder_path, face_analyzer)
     else:
         st.sidebar.warning("Please login as Admin to create albums and upload images")
-    
-    # Initialize components
-    status = st.empty()
-    progress = st.progress(0)
-    face_analyzer = init_face_analyzer()
     
     # Load database from selected album
     status.text("Loading database...")
     album_names = [name for name in os.listdir("albums") if os.path.isdir(os.path.join("albums", name))]
-    selected_album = st.sidebar.selectbox("Select album", album_names)  # ให้ผู้ใช้เลือกอัลบั้มได้
+    selected_album = st.sidebar.selectbox("Select album", album_names, key="select_album_main")
     database_dir = os.path.join("albums", selected_album)  # ใช้โฟลเดอร์ของ album ที่เลือก
     Path(database_dir).mkdir(exist_ok=True)
     database = load_database_images(database_dir, face_analyzer)
