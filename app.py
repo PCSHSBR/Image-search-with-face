@@ -9,13 +9,21 @@ import torch
 import random
 import shutil
 from dotenv import load_dotenv
+from github import Github
+import base64
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Get admin credentials from environment variables
-ADMIN_USERNAME = st.secrets["ADMIN_USERNAME"]
-ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
+if "ADMIN_USERNAME" in st.secrets and "ADMIN_PASSWORD" in st.secrets:
+    ADMIN_USERNAME = st.secrets["ADMIN_USERNAME"]
+    ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+    GITHUB_REPO = st.secrets["GITHUB_REPO"]
+else:
+    st.error("Admin credentials not found in secrets. Please check your secrets.toml file.")
+    st.stop()
 
 # Initialize face analyzer with caching
 @st.cache_resource
@@ -126,7 +134,7 @@ def display_results(matches, cols=3):
         return
     
     # กรองเฉพาะ matches ที่มีความคล้ายเกิน 25%
-    filtered_matches = [m for m in matches if m.get('similarity', 0) * 100 >= 25]
+    filtered_matches = [m for m in matches if m.get('similarity', 0) * 100 >= 10]
     
     if not filtered_matches:
         st.write("No matches above 25% similarity")
@@ -145,6 +153,15 @@ def display_results(matches, cols=3):
                 if match_img is not None:
                     match_img = cv2.cvtColor(match_img, cv2.COLOR_BGR2RGB)
                     st.image(match_img, caption=f"Similarity: {similarity_percent}")
+                    
+                    # เพิ่มปุ่ม Download
+                    with open(match["path"], "rb") as file:
+                        btn = st.download_button(
+                            label="Download",
+                            data=file,
+                            file_name=os.path.basename(match["path"]),
+                            mime="image/jpeg"
+                        )
 
 def create_new_album(album_name):
     album_dir = os.path.join("albums", album_name)
@@ -165,7 +182,10 @@ def upload_to_album(album_name, uploaded_files, face_analyzer):
         file_path = os.path.join(album_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        uploaded_count += 1
+        
+        # Upload to GitHub
+        if upload_to_github(album_name, uploaded_file.name, uploaded_file.getvalue()):
+            uploaded_count += 1
     
     st.success(f"Uploaded {uploaded_count} files to {album_name}")
     return reload_database(album_name, face_analyzer)
@@ -221,11 +241,90 @@ def view_album_images(album_name):
                     st.image(img, caption=img_name)
 
 def check_admin(username, password):
-    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        st.session_state.is_admin = True
+        return True
+    else:
+        st.session_state.is_admin = False
+        return False
 
 def reload_database(album_name, face_analyzer):
     database_dir = os.path.join("albums", album_name)
     return load_database_images(database_dir, face_analyzer)
+
+def delete_album(album_name):
+    album_dir = os.path.join("albums", album_name)
+    if os.path.exists(album_dir):
+        shutil.rmtree(album_dir)
+        st.success(f"Deleted album: {album_name}")
+    else:
+        st.error(f"Album '{album_name}' does not exist")
+
+def upload_to_github(album_name, file_name, file_data):
+    try:
+        # Initialize GitHub
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(GITHUB_REPO)
+        
+        # Create path in GitHub
+        path = f"AI-search/albums/{album_name}/{file_name}"
+        
+        # Encode file data to base64
+        encoded_data = base64.b64encode(file_data).decode("utf-8")
+        
+        # Create or update file in GitHub
+        try:
+            contents = repo.get_contents(path)
+            repo.update_file(path, f"Update {file_name}", encoded_data, contents.sha)
+        except:
+            repo.create_file(path, f"Add {file_name}", encoded_data, branch="main")
+        
+        return True
+    except Exception as e:
+        st.error(f"Error uploading to GitHub: {str(e)}")
+        return False
+
+def upload_all_to_github(github_token, album_name):
+    try:
+        # Initialize GitHub
+        g = Github(github_token)
+        repo = g.get_repo(GITHUB_REPO)
+        
+        # Get album directory
+        album_dir = os.path.join("albums", album_name)
+        if not os.path.exists(album_dir):
+            st.error(f"Album '{album_name}' does not exist")
+            return False
+        
+        # Get all images in the album
+        images = [f for f in os.listdir(album_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        if not images:
+            st.warning(f"No images found in album '{album_name}'")
+            return False
+        
+        # Upload each image to GitHub
+        for img_name in images:
+            img_path = os.path.join(album_dir, img_name)
+            with open(img_path, "rb") as f:
+                file_data = f.read()
+            
+            # Create path in GitHub
+            path = f"AI-search/albums/{album_name}/{img_name}"
+            
+            # Encode file data to base64
+            encoded_data = base64.b64encode(file_data).decode("utf-8")
+            
+            # Create or update file in GitHub
+            try:
+                contents = repo.get_contents(path)
+                repo.update_file(path, f"Update {img_name}", encoded_data, contents.sha)
+            except:
+                repo.create_file(path, f"Add {img_name}", encoded_data, branch="main")
+        
+        return True
+    except Exception as e:
+        st.error(f"Error uploading to GitHub: {str(e)}")
+        return False
 
 def main():
     st.set_page_config(
@@ -236,19 +335,73 @@ def main():
     
     st.title("Face Recognition App 👤")
     
+    # Tutorial section
+    st.header("Tutorial: การใช้งานแอปพลิเคชันค้นหารูปภาพด้วยใบหน้า")
+    st.write("""
+    ### 1. **เข้าสู่แอปพลิเคชัน**
+    - เปิดเบราว์เซอร์และไปที่ลิงก์ของแอปพลิเคชัน
+    - คุณจะเห็นหน้าแรกของแอปพลิเคชันพร้อมกับคำอธิบายสั้นๆ เกี่ยวกับการใช้งาน
+
+    ### 2. **เลือกอัลบั้ม**
+    - ในแถบด้านข้าง ให้เลือกอัลบั้มที่คุณต้องการค้นหารูปภาพ
+    - หากไม่มีอัลบั้มที่ต้องการ คุณสามารถสร้างอัลบั้มใหม่ได้โดยเข้าสู่ระบบเป็น Admin
+
+    ### 3. **อัปโหลดรูปภาพ**
+    - คลิกที่ปุ่ม "Upload an image" เพื่ออัปโหลดรูปภาพที่ต้องการค้นหา
+    - เลือกรูปภาพจากอุปกรณ์ของคุณ (รองรับไฟล์ .jpg, .jpeg, .png)
+
+    ### 4. **รอการประมวลผล**
+    - ระบบจะทำการประมวลผลรูปภาพที่คุณอัปโหลดและแสดงผลลัพธ์
+    - คุณจะเห็นรูปภาพที่คล้ายกันพร้อมกับเปอร์เซ็นต์ความคล้ายคลึง
+
+    ### 5. **ดูผลลัพธ์**
+    - ผลลัพธ์จะแสดงเป็นรูปภาพที่คล้ายกันในแถวละ 3 รูป
+    - คุณสามารถคลิกที่รูปภาพเพื่อดูรายละเอียดเพิ่มเติม
+
+    ### 6. **ปรับแต่งการค้นหา**
+    - คุณสามารถปรับค่า "Similarity Threshold" ในแถบด้านข้างเพื่อกำหนดระดับความคล้ายคลึงที่ต้องการ
+    - ค่าเริ่มต้นคือ 25% คุณสามารถปรับค่าได้ตั้งแต่ 0% ถึง 100%
+
+    ### 7. **ดูรูปภาพในอัลบั้ม**
+    - คลิกที่ปุ่ม "View Album Images" ในแถบด้านข้างเพื่อดูรูปภาพทั้งหมดในอัลบั้มที่เลือก
+    - คุณจะเห็นรูปภาพทั้งหมดในอัลบั้มที่แสดงในแถวละ 3 รูป
+
+    ### 8. **ออกจากแอปพลิเคชัน**
+    - เมื่อคุณใช้งานเสร็จสิ้น คุณสามารถปิดเบราว์เซอร์เพื่อออกจากแอปพลิเคชัน
+    """)
+    
     # Initialize components
     status = st.empty()
     progress = st.progress(0)
     face_analyzer = init_face_analyzer()
     
+    # Initialize session state for login
+    if "is_admin" not in st.session_state:
+        st.session_state.is_admin = False
+    
     # Login section
     st.sidebar.header("Admin Login")
     username = st.sidebar.text_input("Username")
     password = st.sidebar.text_input("Password", type="password")
-    is_admin = check_admin(username, password)
+    if st.sidebar.button("Login"):
+        if check_admin(username, password):
+            st.sidebar.success("Logged in as Admin")
+        else:
+            st.sidebar.error("Invalid username or password")
     
-    if is_admin:
-        st.sidebar.success("Logged in as Admin")
+    # Logout button
+    if st.session_state.is_admin:
+        if st.sidebar.button("Logout"):
+            st.session_state.is_admin = False
+            st.sidebar.success("Logged out successfully")
+    
+    # Rest of the app logic
+    if st.session_state.is_admin:
+        # Admin functionality
+        st.sidebar.header("Admin Panel")
+        
+        # GitHub token input
+        github_token = st.sidebar.text_input("Enter GitHub Token", type="password")
         
         # Create new album section
         st.sidebar.header("Create New Album")
@@ -276,8 +429,21 @@ def main():
         folder_path = st.sidebar.text_input("Enter folder path to upload")
         if st.sidebar.button("Upload Folder") and selected_album and folder_path:
             database = upload_folder_to_album(selected_album, folder_path, face_analyzer)
+        
+        # Delete album section
+        st.sidebar.header("Delete Album")
+        album_to_delete = st.sidebar.selectbox("Select album to delete", album_names, key="select_album_delete")
+        if st.sidebar.button("Delete Album"):
+            delete_album(album_to_delete)
+        
+        # Upload to GitHub button
+        if st.sidebar.button("Upload to GitHub") and github_token:
+            if upload_all_to_github(github_token, selected_album):
+                st.sidebar.success("Uploaded all images to GitHub")
+            else:
+                st.sidebar.error("Failed to upload images to GitHub")
     else:
-        st.sidebar.warning("Please login as Admin to create albums and upload images")
+        st.sidebar.warning("Please login as Admin to access admin features")
     
     # Load database from selected album
     status.text("Loading database...")
@@ -297,7 +463,7 @@ def main():
             value=0.25
         )
         
-        # เพิ่มปุ่มดูรูปใน albums
+        # เพิ่มปุ่มดูรูปภาพใน albums
         if st.sidebar.button("View Album Images"):
             view_album_images(selected_album)
 

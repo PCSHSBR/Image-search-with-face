@@ -7,3 +7,4 @@ onnxruntime
 streamlit
 pillow
 python-dotenv
+PyGithub
